@@ -118,7 +118,7 @@ table(df.fam$SEX, df.pheno$SEX)
 
 ### 1.4 Pre-Imputation QC
 
-Imputation 하기 전에 빡세게 QC 돌리는 구간.
+Imputation 하기 전에 QC 돌리는 구간.
 
 ```r
 # Pre-Imputation QC ------------------------------------------------------
@@ -137,7 +137,7 @@ system("~/plink --ped ./Pre_QC/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.
 
 ### 1.5 Imputation Preparation
 
-서버에 올릴 VCF 파일 만드는 과정.
+Imputation 서버에 올릴 VCF 파일 만드는 과정.
 
 ```r
 # Imputation --------------------------------------------------------------
@@ -355,6 +355,11 @@ FILENAME="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender"
 ```
 
 ---
+
+
+
+
+
 
 ## Part 2. PRS Analysis
 
@@ -617,43 +622,6 @@ cbind.data.frame(PRS=df_prs[,5] %>% scale, SWB=df_pheno$SWB) %>%
 dev.off()
 
 
-# pdf(file="Figure-Scatter-Decile_max-PRS0.01_vs_SWB.pdf", width=7, height=5)
-# cbind.data.frame(PRS=df_prs[,5] %>% scale, SWB=df_pheno$SWB) %>%
-#   mutate(Decile_Group_PRS=dplyr::ntile(PRS, 5)) %>% 
-#   group_by(Decile_Group_PRS) %>%
-#   summarise(maxSWB = max(SWB)) %>% 
-#   # ggpubr::ggboxplot(x="Decile_Group_PRS", y="SWB", fill="Decile_Group_PRS")
-#   ggpubr::ggscatter(x="Decile_Group_PRS", y="maxSWB", shape=18,
-#                     xlab="PRS decile groups", ylab="SWB",
-#                     add="reg.line", conf.int = TRUE,
-#                     add.params = list(color = "blue", fill = "gray50"), # Customize reg. line
-#                     cor.coef = TRUE,
-#                     cor.coeff.args = list(method = "pearson",
-#                                           # label.x = max(df_prs[,5] %>% scale)*0.75,
-#                                           label.y = 2.7,
-#                                           label.sep = "\n")
-#   )
-# dev.off()
-# 
-# 
-# pdf(file="Figure-Scatter-Decile_mean-PRS0.01_vs_SWB.pdf", width=7, height=5)
-# cbind.data.frame(PRS=df_prs[,5] %>% scale, SWB=df_pheno$SWB) %>%
-#   mutate(Decile_Group_PRS=dplyr::ntile(PRS, 10)) %>% 
-#   group_by(Decile_Group_PRS) %>%
-#   summarise(meanSWB = mean(SWB)) %>% 
-#   # ggpubr::ggboxplot(x="Decile_Group_PRS", y="SWB", fill="Decile_Group_PRS")
-#   ggpubr::ggscatter(x="Decile_Group_PRS", y="meanSWB", shape=18,
-#                     xlab="PRS decile groups", ylab="SWB",
-#                     add="reg.line", conf.int = TRUE,
-#                     add.params = list(color = "blue", fill = "gray50"), # Customize reg. line
-#                     cor.coef = TRUE,
-#                     cor.coeff.args = list(method = "pearson",
-#                                           # label.x = max(df_prs[,5] %>% scale)*0.75,
-#                                           # label.y = max(df_pheno$SWB)*0.95,
-#                                           label.sep = "\n")
-#   )
-# dev.off()
-
 cor(df_prs[,5], df_pheno$SWB)
 
 
@@ -670,15 +638,6 @@ prs.result$print.p <- sub("e", "*x*10^", prs.result$print.p)
 # Initialize ggplot, requiring the threshold as the x-axis
 # (use factor so that it is uniformly distributed)
 p = ggplot(data = prs.result, aes(x = factor(Threshold, levels = p.threshold), y = R2)) +
-  # Specify that we want to print p-value on top of the bars
-  # geom_text(
-  #   aes(label = paste(print.p)),
-  #   # vjust = -1.5,
-  #   hjust = -0.2,
-  #   angle = 90,
-  #   cex = 5,
-  #   parse = T
-  # )  +
   # Specify the range of the plot, *1.25 to provide enough space for the p-values
   scale_y_continuous(limits = c(0, max(prs.result$R2) * 1.25)) +
   # Specify the axis labels
