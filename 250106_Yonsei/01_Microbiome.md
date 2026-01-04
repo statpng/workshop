@@ -2,9 +2,8 @@
 
 ## CoDA Pipeline
 
----  
 본 워크숍에서는 마이크로바이옴 데이터의 특성(Sparsity, Compositionality)을 고려한 전처리, 다양성 분석, CoDA 회귀분석(Ternary Plot) 및 Differential Abundance Analysis를 실습함.
----
+
   
 ## [Section 0] 라이브러리 로드 및 환경 설정
   
@@ -66,8 +65,6 @@ theme_set(theme_bw())
 
 ```
 
----
-  
   ## [Section 1] 데이터 로드 및 전처리 (Data Import & Wrangling)
   
   ```r
@@ -120,7 +117,6 @@ print(ps_gut)
 
 ```
 
----
   
   ## [Tutorial] Phyloseq 기본 조작 실습 (Practice)
   
@@ -243,7 +239,6 @@ ps_phylum <- tax_glom(ps, taxrank = "Phylum")
 
 ```
 
----
   
   ## [Section 2] 데이터 필터링 (Quality Control)
   
@@ -285,7 +280,7 @@ summary(sample_sums(ps_clean))
 
 ```
 
----
+
   
   ## [Section 3] 다양성 분석 (Diversity Analysis)
   
@@ -349,7 +344,7 @@ print(p_beta)
 
 ```
 
----
+
   
   ## [Section 4] Visualization: CoDA-based Heatmap
   
@@ -398,7 +393,7 @@ draw(ht, merge_legend = TRUE)
 
 ```
 
----
+
   
   ## [Section 5] Advanced: Compositional Regression & Ternary Plot
   
@@ -559,7 +554,7 @@ print(res_cat$plot)
 
 ```
 
----
+
   
   ## [Section 6] Differential Abundance Analysis (ANCOM-BC2)
   
