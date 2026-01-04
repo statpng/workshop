@@ -1,8 +1,366 @@
-# Microbiome/PRS Analysis Workshop Code
+# Microbiome/PRS Analysis Workshop: 
 
-## 1. 라이브러리 및 사용자 정의 함수 설정
+## From QC/GWAS to PRS
 
-기본 패키지 로드하고, 문자열 정렬을 위한 `png.str.sort` 함수 정의하는 부분임.
+이 파이프라인은 Raw Genotype 데이터의 전처리(QC, Imputation)부터 GWAS 분석을 수행하고, 이를 바탕으로 Polygenic Risk Score(PRS)를 계산하여 검증하는 전체 과정을 포함함.
+
+## Part 1. Data Pre-processing & GWAS
+
+여기서는 Phenotype 데이터 정리, 성별 확인, Imputation, PCA 산출, 그리고 최종 GWAS 분석까지 수행함.
+
+### 1.1 Phenotype & Fam File Processing
+
+데이터 인코딩 문제 해결하고 `.pheno`랑 `.fam` 파일 정리하는 단계임.
+
+```r
+library(tidyverse)
+library(magrittr)
+
+# Fixing broken "Proj Name" encoding: "MR \xc1ߵ\xb5\xc6\xf7\xb1\xe2" >> "MR"
+
+
+# Pheno -------------------------------------------------------------------
+df.pheno <- read.table("./data/data_org/SKKU_dataset_WB_FixEncoding.txt", header=TRUE) %>%
+  mutate(FID = gsub("_", "", Array_Name),
+         IID = FID,
+         SEX = as.numeric(FEMALE == 0)) %>%
+  select(FID, IID, everything(), -Array_Name)
+
+# save it to ".pheno" file
+write.table(df.pheno, file="./data/merge0422.pheno", quote = FALSE, row.names = FALSE)
+
+
+# Fam ---------------------------------------------------------------------
+df.fam <- read.table("./data/data_org/merge0422.fam", header=FALSE) %>%
+  set_colnames(c("FID", "IID", "PID", "MID", "SEX", "PHENO")) %>%
+  mutate(FID = gsub("_", "", FID),
+         IID = FID
+         ) %>%
+  filter(IID %in% df.pheno$IID)
+
+
+
+df.fam %>%
+  write.table(file="./data/merge0422.fam", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+df.fam %>%
+  select(FID, IID) %>%
+  write.table(file="./data/merge0422.ID", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+```
+
+### 1.2 Format Conversion (PLINK)
+
+기본 포맷 변환 작업임.
+
+```r
+# (Ped, Map) ----------------------------------------------------------------
+system("cp ./data/data_org/merge0422.bim ./data/merge0422.bim")
+system("cp ./data/data_org/merge0422.bed ./data/merge0422.bed")
+
+
+# (bim, bed, fam) >> (ped, map), denoted by BBF to PM
+system("~/plink --bfile ./data/merge0422 --keep ./data/merge0422.ID --recode --out ./data/merge0422")
+
+# # (ped, map) >> (bim, bed, fam), denoted by PM to BBF
+# system("~/plink --file ./data/merge0422 --out ./data/merge0422")
+#
+# # (ped, map) >> (vcf)
+# system("~/plink --ped ./data/merge0422.ped --map ./data/merge0422.map --recode vcf --out ./data/merge0422_vcf")
+
+```
+
+### 1.3 Gender Check
+
+성별 불일치 확인해서 이상한 샘플 걸러내는 작업.
+
+```r
+# Check Gender ------------------------------------------------------------
+system("mkdir check-sex")
+system("~/plink --ped ./data/merge0422.ped --check-sex --map ./data/merge0422.map --keep ./data/merge0422.ID --snps-only just-acgt --out ./check-sex/merge0422_check-sex")
+
+
+df.checksex <- read.table("./check-sex/merge0422_check-sex.sexcheck", header=TRUE) %>%
+  mutate(FSEX = case_when(abs(F)>0.8 ~ 1,
+                          abs(F)<0.2 ~ 0,
+                          .default = 9999))
+df.nosex <- read.table("./check-sex/merge0422_check-sex.nosex")
+
+df.sex_ambiguous <-
+  df.checksex %>%
+  filter(PEDSEX==0) # Ambiguous (no gender in .fam file)
+
+# Appropriate
+df.sex_ambiguous %>% {
+  table(.$FSEX, .$SNPSEX)
+}
+
+
+df.SexDiscrepancy <-
+  df.pheno %>%
+  left_join(df.checksex, by="IID", suffix=c("", ".new")) %>%
+  # filter(SEX != SEX)
+  filter(SEX != FSEX)
+
+
+
+
+read.table("./data/merge0422.ID", col.names = c("FID", "IID")) %>%
+  filter(!IID %in% df.SexDiscrepancy$IID) %>%
+  write.table(file="./data/merge0422.ID_sex", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+
+
+
+table(df.fam$SEX, df.pheno$SEX)
+
+```
+
+### 1.4 Pre-Imputation QC
+
+Imputation 하기 전에 빡세게 QC 돌리는 구간.
+
+```r
+# Pre-Imputation QC ------------------------------------------------------
+
+# 1: pre-screening
+system("mkdir Pre_QC")
+system("~/plink --ped ./data/merge0422.ped --map ./data/merge0422.map --keep ./data/merge0422.ID_sex --snps-only just-acgt --geno 0.2 --mind 0.2 --recode --out ./Pre_QC/merge0422_geno0.2_mind0.2")
+
+# 2: main SNP-QC
+system("~/plink --ped ./Pre_QC/merge0422_geno0.2_mind0.2.ped --map ./Pre_QC/merge0422_geno0.2_mind0.2.map --chr 1-22 --snps-only just-acgt --geno 0.05 --maf 0.005 --hwe 0.000001 --recode --out ./Pre_QC/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001")
+
+# 3: main Sample-QC
+system("~/plink --ped ./Pre_QC/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001.ped --map ./Pre_QC/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001.map --genome --max 0.2 --mind 0.03 --recode --out ./Pre_QC/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001_genome0.2_mind0.03")
+
+```
+
+### 1.5 Imputation Preparation
+
+서버에 올릴 VCF 파일 만드는 과정.
+
+```r
+# Imputation --------------------------------------------------------------
+
+
+# Convert to vcf.gz -------------------------------------------------------
+
+system("mkdir Imputation_vcf")
+for( i in 1:22 ){
+  system(paste0("~/plink --ped ./Pre_QC/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001_genome0.2_mind0.03.ped --map ./Pre_QC/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001_genome0.2_mind0.03.map --recode vcf --chr ", i, " --snps-only just-acgt --out ./Imputation_vcf/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001_genome0.2_mind0.03_chr",i))
+  system(paste0("bcftools sort ./Imputation_vcf/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001_genome0.2_mind0.03_chr",i,".vcf -Oz -o ./Imputation_vcf/merge0422_geno0.2_mind0.2_maf0.005_geno0.05_hwe0.000001_genome0.2_mind0.03_chr",i,".vcf.gz"))
+}
+
+
+
+
+# Imputation server -------------------------------------------------------
+
+# (1) https://coda.nih.go.kr/frt/index.do
+# (2) 활용 - 한국인 임퓨테이션 서비스 - 서비스로 이동
+#     Utilization - Korean Impression Service - Go to Service
+# (3) Login: ID/PWD
+# rsq Filter: off
+# Phasing: Eagle v2.4
+# Imputation: Minimac4
+# Mode: QC & Imputation
+# Check - "Generate Meta-imputation file"
+
+```
+
+### 1.6 Post-Imputation Processing
+
+Imputation 끝나고 받은 파일 압축 풀고 정리하는 과정.
+
+```r
+# Post-QC after imputation ------------------------------------------------
+PASSWORD = "i2Lgl5*wiBUpQY"
+
+system("mkdir Imputatino_${PASSWORD}")
+
+system('
+PASSWORD="i2Lgl5*wiBUpQY"
+
+for i in {1..22}
+do
+unzip -P ${PASSWORD} "./Imputation_${PASSWORD}/chr_${i}.zip"
+done
+')
+
+
+
+system('
+PASSWORD="i2Lgl5*wiBUpQY"
+
+for i in {1..22}
+do
+gunzip -d ./Imputation_${PASSWORD}/chr${i}.info.gz
+done
+')
+# gunzip -d ./Imputation_${PASSWORD}/chr${i}.dose.vcf.gz
+# gunzip -d ./Imputation_${PASSWORD}/chr${i}.empiricalDose.vcf.gz
+
+```
+
+### 1.7 Post-Imputation QC & Merge
+
+결과 파일 합치고(, MAF 등 기준) 다시 PLINK 파일로 변환.
+
+```r
+# Post-Imputation QC --------------------------------------------------
+
+# # Imp > 0.8
+# system('
+# PASSWORD="kgjkNKJ?r7DoM4"
+#
+# for i in {1..22}
+# do
+# filename=chr${i}.dose
+#
+# bcftools view -i "R2>.8" -Oz ./Imputation_${PASSWORD}/$filename.vcf.gz > ./Imputation_${PASSWORD}/$filename.filtered.vcf.gz; tabix -p vcf ./Imputation_${PASSWORD}/$filename.filtered.vcf.gz;
+#
+# done
+# ')
+
+system("mkdir Post_QC")
+
+system('
+PATH="./Imputation_i2Lgl5*wiBUpQY"
+cd $PATH
+
+bcftools concat chr1.dose.vcf.gz chr2.dose.vcf.gz chr3.dose.vcf.gz chr4.dose.vcf.gz chr5.dose.vcf.gz chr6.dose.vcf.gz chr7.dose.vcf.gz chr8.dose.vcf.gz chr9.dose.vcf.gz chr10.dose.vcf.gz chr11.dose.vcf.gz chr12.dose.vcf.gz chr13.dose.vcf.gz chr14.dose.vcf.gz chr15.dose.vcf.gz chr16.dose.vcf.gz chr17.dose.vcf.gz chr18.dose.vcf.gz chr19.dose.vcf.gz chr20.dose.vcf.gz chr21.dose.vcf.gz chr22.dose.vcf.gz -Ou |
+bcftools view -Ou -i "R2>0.8" |
+bcftools annotate -Oz -x ID -I +"%CHROM:%POS:%REF:%ALT" -o ../Post_QC/Total.dose.R20.8.vcf.gz')
+# This does not work. Please run the shell script above in terminal.
+
+
+
+
+# MAF > 0.5%
+# SNP call rate > 99% (geno < 1%)
+
+system('
+~/plink --vcf ./Post_QC/Total.dose.R20.8.vcf.gz --biallelic-only --allow-extra-chr 0 --autosome --maf 0.005 --geno 0.05 --hwe 1e-6 --make-bed --out ./Post_QC/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001
+')
+
+```
+
+### 1.8 PCA & Covariate Generation
+
+LD Pruning 후 PCA 돌리고, 공변량 파일(Covariate file) 만드는 과정.
+
+```r
+# PCA ---------------------------------------------------------------------
+
+system("mkdir PCA")
+
+# Prune snps
+system('
+FILENAME="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001"
+
+~/plink --bfile ./Post_QC/${FILENAME} --indep-pairwise 1000 10 0.02 --autosome --exclude ../exclusion_regions_hg19.txt --out ./PCA/${FILENAME}_PrunedData
+')
+
+
+# Extract pruned SNPs and only these variants will be used for PC calculation
+system('
+FILENAME="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001"
+
+~/plink --bfile ./Post_QC/${FILENAME} --extract ./PCA/${FILENAME}_PrunedData.prune.in --make-bed --out ./PCA/${FILENAME}_PrunedData_forPCA
+')
+
+
+# Calculate/generate PCs based on pruned data set
+system('
+FILENAME="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001"
+
+~/plink --bfile ./PCA/${FILENAME}_PrunedData_forPCA --pca 30 --out ./PCA/${FILENAME}_PrunedData_forPCA_outPCA
+')
+
+# then use the .eigenvec file
+
+
+
+
+
+# R
+library(tidyverse)
+df.pc = read.table("./PCA/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_PrunedData_forPCA_outPCA.eigenvec", header=FALSE)
+
+df.eigenvalue <- scan("./PCA/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_PrunedData_forPCA_outPCA.eigenval")
+
+df.pc <- df.pc[,-1]
+# set names
+names(df.pc)[1] <- "IID"
+names(df.pc)[2:ncol(df.pc)] <- paste0("PC", 1:(ncol(df.pc)-1))
+head(df.pc)
+
+write.table(df.pc, file="./data/merge0422.PC", row.names=FALSE, quote=FALSE)
+
+
+df.pheno = read.table("./data/merge0422.pheno", header=TRUE)
+# df.pheno$FID <- paste0(df.pheno$FID, "_", df.pheno$FID)
+df.pheno.pc <- left_join(df.pc, df.pheno, "IID") %>% mutate(AGE_SEX = AGE * SEX, AGE2 = AGE^2, AGE2_SEX = AGE2 * SEX) %>% select(FID, IID, AGE, SEX, AGE_SEX, AGE2, AGE2_SEX, everything())
+
+
+library(magrittr)
+df.fam <- read.table("./Post_QC/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001.fam") %>%
+  set_colnames(c("FID", "IID", "PID", "MID", "SEX", "PHENO"))
+
+df.id <- read.table("./data/merge0422.ID")[,2]
+
+
+
+df.fam <- left_join( df.fam %>% select(-SEX), df.pheno.pc %>% select(IID, SEX, SWB), "IID" ) %>% mutate(SEX = case_when(SEX==0~2, SEX==1~1, .default=0)) %>% select(FID, IID, PID, MID, SEX, PHENO)
+
+
+
+
+write.table(df.pheno.pc, file="./data/merge0422.pheno_pc", row.names=FALSE, quote=FALSE)
+
+
+
+write.table(df.fam, file="./Post_QC/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender.fam", col.names=FALSE, row.names=FALSE, quote=FALSE)
+
+system("cp ./Post_QC/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001.bim ./Post_QC/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender.bim")
+system("cp ./Post_QC/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001.bed ./Post_QC/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender.bed")
+
+```
+
+### 1.9 Final GWAS Execution
+
+최종적으로 GWAS (Linear Regression) 실행.
+
+```r
+# GWAS --------------------------------------------------------------------
+
+library(tidyverse)
+df.pheno <- read.table("./data/merge0422.pheno_pc", header=TRUE)
+
+df.pheno %>% head(3)
+
+
+system("mkdir GWAS")
+
+
+# FINAL
+system('
+FILENAME="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender"
+
+~/plink --bfile ./Post_QC/${FILENAME} --autosome --snps-only just-acgt --covar ./data/merge0422.pheno_pc --covar-name AGE,SEX,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8,PC9,PC10 --pheno ./data/merge0422.pheno_pc --pheno-name SWB --linear --adjust --out ./GWAS/${FILENAME}_SWB
+')
+
+# AGE,SEX,AGE_SEX,AGE2,AGE2_SEX,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8,PC9,PC10
+
+```
+
+---
+
+## Part 2. PRS Analysis
+
+Part 1에서 만들어진 Clean Data와 Summary Statistics를 이용해서 PRS 점수 계산하고 검증하는 단계임. (이전 요청하셨던 코드 부분)
+
+### 2.1 Setup & Helper Functions
 
 ```r
 ## https://github.com/FINNGEN/CS-PRS-pipeline
@@ -19,9 +377,7 @@ png.str.sort <- function(string) vapply(stri_split_boundaries(string, type = "ch
 
 ```
 
-## 2. 작업 경로 및 데이터 로드
-
-경로 설정하고 `.bim` 파일이랑 Summary Statistics 파일 불러오는 과정임. 경로(`/Volumes/png2/...`)는 실습 환경에 맞춰서 수정해야 함.
+### 2.2 Data Loading & Harmonization
 
 ```r
 # 작업 디렉토리 및 파일 설정
@@ -44,13 +400,6 @@ colnames(df_summary) <- summary_header
 dim(df_summary)
 # [1] 6825851        9
 
-```
-
-## 3. 데이터 병합 (Harmonization)
-
-Summary Statistics랑 Target Data(.bim)를 Chromosome이랑 Position 기준으로 합치는 부분임.
-
-```r
 # .bim과 SummaryStat join하기
 # > by: ("CHR", "POS") in summary  vs  ("bim.CHR", "bim.POS") in .bim
 # >> 이를 위해 relationship = "many-to-many"로 설정함.
@@ -61,13 +410,9 @@ df_summary2 <- df_summary %>%
             suffix=c("", ".new"), 
             relationship="many-to-many")
 
-```
 
-## 4. SNP 매칭 확인 및 분류
 
-제대로 합쳐졌는지 개수 확인(`dim`)하고, 공통된 SNP랑 Summary Stat에만 있는 SNP 따로 저장하는 코드임.
 
-```r
 # SummaryStat과 .bim 간의 shared SNPs 비교
 ## the number of rows
 df_summary2 %>% dim
@@ -89,13 +434,8 @@ df_summary2 %>% filter(is.na(bim.SNP)) %>% filter(!duplicated(SNP)) %>% dim
 df_summary2 %>% filter(!is.na(bim.SNP)) %>% arrange(PVALUE) %>% write.table(file="sumstat+bim_common.txt", quote=FALSE, row.names=F)
 df_summary2 %>% filter(is.na(bim.SNP)) %>% arrange(PVALUE) %>% write.table(file="sumstat+bim_onlysumstat.txt", quote=FALSE, row.names=F)
 
-```
 
-## 5. Multiallelic SNP 처리 및 Allele 정렬
 
-위치(CHR, POS)가 같아도 Allele가 다를 수 있어서 확인하는 과정임. `png.str.sort` 써서 순서 상관없이 매칭되는지 체크함.
-
-```r
 # Multiallelic SNP의 경우에는 (CHR, POS)로 join되었더라도 다른 SNP을 가질 수 있음.
 df_summary3 <- df_summary2 %>% filter(!is.na(bim.SNP))
 
@@ -121,13 +461,7 @@ df_summary3 %>% filter(A12 != bim.allele12) %>% arrange(PVALUE) %>%
 df_summary3 %>% filter(A12 == bim.allele12) %>%
   write.table("./SummaryStatistics/GCST90104897_buildGRCh37_new.txt", quote=FALSE, row.names=F, col.names=T)
 
-```
 
-## 6. PLINK 입력 파일 생성
-
-PLINK 돌리기 전에 rsID 변환 파일이랑 SNP 리스트 파일 만드는 작업임.
-
-```r
 # c("CHR", "POS", "SNP", "A1_EFFECT", "A2_NONEFFECT", "NMISS", "BETA", "SE", "PVALUE")
 df_summary3 %>% filter(A12 == bim.allele12) %>% filter(!duplicated(bim.SNP)) %>% 
   select(bim.SNP, SNP, CHR, POS, A1_EFFECT, A2_NONEFFECT) %>%
@@ -138,9 +472,7 @@ df_summary3 %>% filter(A12 == bim.allele12) %>% filter(!duplicated(bim.SNP)) %>%
 
 ```
 
-## 7. PLINK 실행 (System Calls)
-
-R 내부에서 `system()` 명령어로 PLINK 1.9/2.0 실행하는 부분임. QC, Clumping, Scoring 다 여기서 함.
+### 2.3 PRS Calculation (Clumping & Scoring)
 
 ```r
 #
@@ -191,9 +523,7 @@ system("~/plink2 --bfile Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_f
 
 ```
 
-## 8. Threshold 검증 (R Loop)
-
-여러 P-value threshold에 대해 PRS 계산해서  비교하는 루프임.
+### 2.4 Threshold Optimization
 
 ```r
 library(tidyverse)
@@ -259,9 +589,7 @@ prs.result[which.max(prs.result$R2),]
 
 ```
 
-## 9. 시각화 (Visualization)
-
-산점도 그리는 코드랑, 주석 처리된 Decile Plot 코드까지 다 포함되어 있음.
+### 2.5 Visualization & Advanced Analysis
 
 ```r
 # Visualization -----------------------------------------------------------
@@ -379,13 +707,14 @@ p = ggplot(data = prs.result, aes(x = factor(Threshold, levels = p.threshold), y
 # save the plot
 ggsave("Figure-Pred_R2_barplot.pdf", p, height = 5, width = 10)
 
-```
 
-## 10. 상세 회귀분석 (Subgroup Analysis & Robust Regression)
 
-나이대별로 쪼개서 분석하거나, 이상치 제거하고 Robust Regression 돌리는 심화 분석 코드임.
 
-```r
+
+
+
+
+
 # Regression --------------------------------------------------------------
 
 df_prs <- read.table("/Volumes/png2/LSH/merge0422-PRS/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump_PRS.0.01.sscore") %>% {scale(.[,5]) %>% as.vector}
