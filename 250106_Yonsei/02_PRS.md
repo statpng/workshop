@@ -1,48 +1,36 @@
-# Polygenic Risk Score (PRS) Analysis Pipeline
+# Microbiome/PRS Analysis Workshop Code
 
-본 튜토리얼은 GWAS Summary Statistic과 Target Genotype 데이터를 사용하여 Polygenic Risk Score(PRS)를 계산하고, 표현형(Phenotype)과의 연관성을 분석하는 전체 파이프라인을 다룹니다.
+## 1. 라이브러리 및 사용자 정의 함수 설정
 
-## Prerequisites
-
-이 분석을 수행하기 위해서는 다음의 소프트웨어와 R 패키지가 필요합니다.
-
-* **Software:** [PLINK 1.9](https://www.cog-genomics.org/plink/) & [PLINK 2.0](https://www.cog-genomics.org/plink/2.0/)
-* **R Packages:** `tidyverse`, `data.table`, `stringi`, `ggplot2`, `ggpubr`, `robustbase`, `broom`, `olsrr`
-* **Custom Package:** `png.utils` (User defined)
-
-
-## 1. Setup & Helper Functions
-
-필요한 라이브러리를 로드하고 문자열 처리를 위한 사용자 정의 함수를 설정합니다.
+기본 패키지 로드하고, 문자열 정렬을 위한 `png.str.sort` 함수 정의하는 부분임.
 
 ```r
+## https://github.com/FINNGEN/CS-PRS-pipeline
 library(tidyverse)
 library(data.table)
-library(stringi)
+library(png.utils)
 
-# 사용자 정의 함수 (Custom Helper Functions)
-# png.utils 패키지가 없는 경우 아래 함수들을 직접 정의하여 사용
+
+# 사용자 정의 함수
+library(stringi)
 striHelper <- function(x) stri_c(x[stri_order(x)], collapse = "")
 png.str.sort <- function(string) vapply(stri_split_boundaries(string, type = "character"), striHelper, "")
-
-# Test function
 "asjdkflasdf" %>% png.str.sort()
 
 ```
 
-## 2. Data Loading & Harmonization
+## 2. 작업 경로 및 데이터 로드
 
-작업 경로를 설정하고, Target 데이터(.bim)와 Base 데이터(Summary Statistics)를 불러옵니다. 이후 두 데이터 간의 SNP를 매칭하고 Allele를 정렬하여 Harmonization을 수행합니다.
-
-> **Note:** 실습 환경에 맞춰 `setwd` 및 파일 경로(`bfile_path`, `summary_path`)를 수정해 주세요.
+경로 설정하고 `.bim` 파일이랑 Summary Statistics 파일 불러오는 과정임. 경로(`/Volumes/png2/...`)는 실습 환경에 맞춰서 수정해야 함.
 
 ```r
 # 작업 디렉토리 및 파일 설정
-setwd("/Volumes/png2/LSH/merge0422-PRS") # 본인의 경로로 수정 필요
+setwd("/Volumes/png2/LSH/merge0422-PRS")
 
 bfile_path <- "/Volumes/png2/LSH/merge0422/FinalData"
 summary_path <- "/Volumes/png2/LSH/merge0422-PRS/SummaryStatistics"
 summary_header <- c("CHR", "POS", "SNP", "A1_EFFECT", "A2_NONEFFECT", "NMISS", "BETA", "SE", "PVALUE")
+
 
 # 데이터 불러오기: bfile=.bim file,  sfile=SummaryStat file
 bfile <- list.files(bfile_path, pattern="\\.(bim)", full.names=TRUE)
@@ -53,68 +41,134 @@ colnames(df_bim) <- c("bim.CHR", "bim.SNP", "bim.GD", "bim.POS", "bim.REF", "bim
 
 df_summary <- data.table::fread(sfile)
 colnames(df_summary) <- summary_header
+dim(df_summary)
+# [1] 6825851        9
 
-# .bim과 SummaryStat join하기 (Based on CHR, POS)
+```
+
+## 3. 데이터 병합 (Harmonization)
+
+Summary Statistics랑 Target Data(.bim)를 Chromosome이랑 Position 기준으로 합치는 부분임.
+
+```r
+# .bim과 SummaryStat join하기
+# > by: ("CHR", "POS") in summary  vs  ("bim.CHR", "bim.POS") in .bim
+# >> 이를 위해 relationship = "many-to-many"로 설정함.
+# > suffix: 중복되는 칼럼명이 있으면 SummaryStat 칼럼명은 그대로 ("") 두고 .bim의 칼럼명에 .new 추가하기 (e.g. pvalue >> pvalue.new).
 df_summary2 <- df_summary %>% 
   left_join(df_bim, 
             by=c("CHR"="bim.CHR", "POS"="bim.POS"), 
             suffix=c("", ".new"), 
             relationship="many-to-many")
 
-# Shared SNPs 확인 및 저장
-df_summary2 %>% filter(!is.na(bim.SNP)) %>% arrange(PVALUE) %>% 
-  write.table(file="sumstat+bim_common.txt", quote=FALSE, row.names=F)
+```
 
-# Multiallelic SNP 처리 및 Allele 정렬 확인
+## 4. SNP 매칭 확인 및 분류
+
+제대로 합쳐졌는지 개수 확인(`dim`)하고, 공통된 SNP랑 Summary Stat에만 있는 SNP 따로 저장하는 코드임.
+
+```r
+# SummaryStat과 .bim 간의 shared SNPs 비교
+## the number of rows
+df_summary2 %>% dim
+# [1] 6837756      13
+df_summary2 %>% filter(!is.na(bim.SNP)) %>% dim
+# [1] 6294054      13
+df_summary2 %>% filter(is.na(bim.SNP)) %>% dim
+# [1] 543702     13
+
+## the number of SNPs
+df_summary2 %>% filter(!duplicated(SNP)) %>% dim
+# [1] 6823957      13
+df_summary2 %>% filter(!is.na(bim.SNP)) %>% filter(!duplicated(SNP)) %>% dim
+# [1] 6280287      13
+df_summary2 %>% filter(is.na(bim.SNP)) %>% filter(!duplicated(SNP)) %>% dim
+# [1] 543670     13
+
+# Shared SNPs 리스트 따로 저장해두기
+df_summary2 %>% filter(!is.na(bim.SNP)) %>% arrange(PVALUE) %>% write.table(file="sumstat+bim_common.txt", quote=FALSE, row.names=F)
+df_summary2 %>% filter(is.na(bim.SNP)) %>% arrange(PVALUE) %>% write.table(file="sumstat+bim_onlysumstat.txt", quote=FALSE, row.names=F)
+
+```
+
+## 5. Multiallelic SNP 처리 및 Allele 정렬
+
+위치(CHR, POS)가 같아도 Allele가 다를 수 있어서 확인하는 과정임. `png.str.sort` 써서 순서 상관없이 매칭되는지 체크함.
+
+```r
+# Multiallelic SNP의 경우에는 (CHR, POS)로 join되었더라도 다른 SNP을 가질 수 있음.
 df_summary3 <- df_summary2 %>% filter(!is.na(bim.SNP))
+
 df_summary3[,c("chr","pos","bim.allele1","bim.allele2"):=tstrsplit(bim.SNP, ":", fixed = TRUE, keep = 1:4)]
 df_summary3[,c("A12","bim.allele12"):=list( paste(A1_EFFECT, A2_NONEFFECT, sep="") %>% png.str.sort(), paste(bim.allele1, bim.allele2, sep="") %>% png.str.sort() )]
 
-# Mismatched Alleles 확인 및 저장
+
+df_summary3 %>% filter(A12 != bim.allele12) %>% filter(!duplicated(SNP)) %>% dim()
+# [1] 11083    19
+df_summary3 %>% filter(A12 == bim.allele12) %>% filter(!duplicated(SNP)) %>% dim()
+# [1] 6278736       19
+
+df_summary3 %>% filter(A12 != bim.allele12) %>% dim()
+# [1] 13620    19
+df_summary3 %>% filter(A12 == bim.allele12) %>% dim()
+# [1] 6280434       19
+
+
+
 df_summary3 %>% filter(A12 != bim.allele12) %>% arrange(PVALUE) %>%
   write.table("./sumstat+bim_DiffAlleles.txt", quote=FALSE, row.names=F, col.names=T)
 
-# Matched Alleles 저장 (QC 통과한 SNP)
 df_summary3 %>% filter(A12 == bim.allele12) %>%
   write.table("./SummaryStatistics/GCST90104897_buildGRCh37_new.txt", quote=FALSE, row.names=F, col.names=T)
 
-# rsID Conversion 파일 생성
+```
+
+## 6. PLINK 입력 파일 생성
+
+PLINK 돌리기 전에 rsID 변환 파일이랑 SNP 리스트 파일 만드는 작업임.
+
+```r
+# c("CHR", "POS", "SNP", "A1_EFFECT", "A2_NONEFFECT", "NMISS", "BETA", "SE", "PVALUE")
 df_summary3 %>% filter(A12 == bim.allele12) %>% filter(!duplicated(bim.SNP)) %>% 
   select(bim.SNP, SNP, CHR, POS, A1_EFFECT, A2_NONEFFECT) %>%
   write.table(file="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender.rsID_conversion", quote=FALSE, row.names=F, col.names=F)
 
-# PRS용 SNP List 생성
 df_summary3 %>% filter(A12 == bim.allele12) %>% filter(!duplicated(bim.SNP)) %>% .$bim.SNP %>%
   write.table(file="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS.snpList", quote=FALSE, row.names=FALSE, col.names=FALSE)
 
 ```
 
-## 3. PLINK Processing (Clumping & Scoring)
+## 7. PLINK 실행 (System Calls)
 
-R의 `system()` 함수를 이용하여 PLINK 명령어를 실행합니다. 이 단계에서는 SNP Filtering, Clumping, 그리고 최종적인 Score 계산이 수행됩니다.
+R 내부에서 `system()` 명령어로 PLINK 1.9/2.0 실행하는 부분임. QC, Clumping, Scoring 다 여기서 함.
 
 ```r
-# 1. Extract SNPs and Make BED
+#
 system("~/plink2 --bfile ./FinalData/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender --extract ./Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS.snpList --make-bed --out Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered")
 
-# 2. Update SNP IDs to rsIDs
+
+
 system("~/plink2 --bfile ./Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered --update-name Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender.rsID_conversion 2 1 --make-bed --out Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID")
 
-# 3. Frequency Check
+
 system("~/plink2 --bfile Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID --freq --out Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID")
 
-# 4. Remove Multi-allelic Duplicates
+
+
+
+
+# --allow-extra-chr
+
+# Remove multi-allelic SNPs
 system("cut -f 2 Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID.bim | sort | uniq -d > Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID.dups")
 
-# 5. Clumping (LD Pruning)
-# Parameters: kb=250, p1=1, r2=0.1
 system("~/plink --bfile Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID --exclude Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID.dups --clump ./SummaryStatistics/GCST90104897_buildGRCh37_new.txt --clump-field PVALUE --clump-kb 250 --clump-p1 1 --clump-r2 0.1 --clump-snp-field SNP --out Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump")
 
-# 6. Extract Clumped SNPs
 system("awk 'NR!=1{print $3}' Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump.clumped > Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump.snp")
+
 system("awk '{print $3,$5}' Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump.clumped > Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump.snp_pvalue")
 
-# 7. Create Range List for Thresholding
+
 system('echo "5e-8 0 5e-8" > range_list
 echo "5e-7 0 5e-7" >> range_list
 echo "5e-6 0 5e-6" >> range_list
@@ -130,156 +184,301 @@ echo "0.4 0 0.4" >> range_list
 echo "0.5 0 0.5" >> range_list
 echo "1 0 1" >> range_list')
 
-# 8. Calculate PRS Score
+
+
+
 system("~/plink2 --bfile Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID --score ./SummaryStatistics/GCST90104897_buildGRCh37_new.txt 3 4 7 header --q-score-range range_list Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump.snp_pvalue --extract Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump.snp --out Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump_PRS")
 
 ```
 
-## 4. Threshold Selection & Validation
+## 8. Threshold 검증 (R Loop)
 
-다양한 P-value threshold에 대해 계산된 PRS를 로드하고, Phenotype(Subjective Well-Being, SWB)에 대한 설명력()을 비교하여 최적의 Threshold를 선정합니다.
+여러 P-value threshold에 대해 PRS 계산해서  비교하는 루프임.
 
 ```r
 library(tidyverse)
 
 p.threshold = c("5e-8","5e-7","5e-6","5e-5","5e-4","5e-3","0.01","0.05","0.1","0.2","0.3","0.4","0.5","1")[-1]
 
-# Phenotype Load (Covariates included)
-pheno <- data.table::fread("./FinalData/merge0422.pheno_pc") %>% 
+
+# Read in the phenotype file
+pheno <- data.table::fread("./FinalData/merge0422.pheno_pc") %>%
   select(FID, IID, AGE, SEX, SWB, PC1:PC4) %>% as.data.frame
 
-# Null Model (Only Covariates)
+# We can then calculate the null model (model with PRS) using a linear regression
 null.model <- lm(SWB~., data=pheno %>% {.[,!colnames(.)%in%c("FID","IID")]})
 null.r2 <- summary(null.model)$r.squared
 
 prs.result <- NULL
 for(i in p.threshold){
-  # Read PRS file for specific threshold
+  # Go through each p-value threshold
   prs <- read.table(paste0("./Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump_PRS.",i,".sscore"), header=FALSE)
   colnames(prs) <- c("FID", "IID", "CNT1", "CNT2", "SCORE")
-  
-  # Merge with Phenotype
+  # Merge the prs with the phenotype matrix
+  # We only want the FID, IID and PRS from the PRS file, therefore we only select the
+  # relevant columns
   pheno.prs <- merge(pheno, prs[,c("FID","IID", "SCORE")], by=c("FID", "IID"))
-  
-  # Scale PRS
+  # Now perform a linear regression on Height with PRS and the covariates
+  # ignoring the FID and IID from our model
   pheno.prs$SCORE <- scale(pheno.prs$SCORE)
-  
-  # Full Model (Covariates + PRS)
   model <- lm((SWB)~., data=pheno.prs %>% {.[,!colnames(.)%in%c("FID","IID")]})
-  
-  # Calculate Partial R2 for PRS
+  # model R2 is obtained as
   model.r2 <- summary(model)$r.squared
-  prs.r2 <- model.r2 - null.r2
-  
-  # Store Statistics
+  # R2 of PRS is simply calculated as the model R2 minus the null R2
+  prs.r2 <- model.r2-null.r2
+  # We can also obtain the coeffcient and p-value of association of PRS as follow
   prs.coef <- summary(model)$coeff["SCORE",]
-  prs.result <- rbind(prs.result, data.frame(Threshold=i, R2=prs.r2, P=as.numeric(prs.coef[4]), BETA=as.numeric(prs.coef[1]), SE=as.numeric(prs.coef[2])))
+  prs.beta <- as.numeric(prs.coef[1])
+  prs.se <- as.numeric(prs.coef[2])
+  prs.p <- as.numeric(prs.coef[4])
+  # We can then store the results
+  prs.result <- rbind(prs.result, data.frame(Threshold=i, R2=prs.r2, P=prs.p, BETA=prs.beta,SE=prs.se))
 }
 
-# Best Threshold 확인
-print(prs.result[which.max(prs.result$R2),])
+
+prs.result
+# Threshold            R2         P        BETA          SE
+# 1       5e-7 0.0038947048 0.4259553 -0.06314598 0.07911224
+# 2       5e-6 0.0002015533 0.8564159 -0.01473470 0.08130273
+# 3       5e-5 0.0102604553 0.1955525 -0.10273400 0.07903862
+# 4       5e-4 0.0044460682 0.3949131 -0.06767693 0.07933497
+# 5       5e-3 0.0091189674 0.2225228  0.09682509 0.07906424
+# 6       0.01 0.0103551130 0.1934928  0.10233056 0.07836372
+# 7       0.05 0.0043088217 0.4023240  0.06599004 0.07858539
+# 8        0.1 0.0007470564 0.7275426  0.02747658 0.07872692
+# 9        0.2 0.0001091313 0.8940846  0.01048044 0.07859307
+# 10       0.3 0.0027545846 0.5032768  0.05275520 0.07863701
+# 11       0.4 0.0035742110 0.4456964  0.06012240 0.07864172
+# 12       0.5 0.0019251601 0.5758545  0.04413411 0.07872556
+# 13         1 0.0014657285 0.6254832  0.03866840 0.07906907
+
+# Best result is:
+prs.result[which.max(prs.result$R2),]
+# Threshold         R2         P      BETA       SE
+# 6       0.01 0.01035511 0.1934928 0.1023306 0.07836372
 
 ```
 
-## 5. Visualization
+## 9. 시각화 (Visualization)
 
-결과를 시각화합니다.
-
-1. **Scatter Plot:** PRS(0.01 threshold)와 SWB 간의 관계
-2. **Bar Plot:** P-value threshold 별 Model Fit () 비교
+산점도 그리는 코드랑, 주석 처리된 Decile Plot 코드까지 다 포함되어 있음.
 
 ```r
-library(ggplot2)
-library(ggpubr)
+# Visualization -----------------------------------------------------------
 
-# Best Threshold에 해당하는 PRS 데이터 로드
-best_thresh <- p.threshold[which.max(prs.result$R2)]
-df_prs <- read.table(paste0("./Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump_PRS.", best_thresh, ".sscore"))
+df_prs <- read.table(paste0("./Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump_PRS.",p.threshold[which.max(prs.result$R2)],".sscore"))
 df_pheno <- data.table::fread("./FinalData/merge0422.pheno_pc")
 
-# 1. Scatter Plot
+df_prs %>% head
+df_prs[,5] %>% summary
+df_prs[,5] %>% hist
+
+
 pdf(file="Figure-Scatter-PRS0.01_vs_SWB.pdf", width=7, height=5)
 cbind.data.frame(PRS=df_prs[,5] %>% scale, SWB=df_pheno$SWB) %>%
-  ggscatter(x="PRS", y="SWB", shape=18,
-            xlab="Standardized PRS", ylab="SWB",
-            add="reg.line", conf.int = TRUE,
-            add.params = list(color = "blue", fill = "gray50"),
-            cor.coef = TRUE,
-            cor.coeff.args = list(method = "pearson", label.sep = "\n"))
+  ggpubr::ggscatter(x="PRS", y="SWB", shape=18,
+                    xlab="Standardized PRS", ylab="SWB",
+                    add="reg.line", conf.int = TRUE,
+                    add.params = list(color = "blue", fill = "gray50"), # Customize reg. line
+                    cor.coef = TRUE,
+                    cor.coeff.args = list(method = "pearson",
+                                          label.x = max(df_prs[,5] %>% scale)*0.75,
+                                          label.y = max(df_pheno$SWB)*0.95,
+                                          label.sep = "\n")
+  )
 dev.off()
 
-# 2. R2 Bar Plot
+
+# pdf(file="Figure-Scatter-Decile_max-PRS0.01_vs_SWB.pdf", width=7, height=5)
+# cbind.data.frame(PRS=df_prs[,5] %>% scale, SWB=df_pheno$SWB) %>%
+#   mutate(Decile_Group_PRS=dplyr::ntile(PRS, 5)) %>% 
+#   group_by(Decile_Group_PRS) %>%
+#   summarise(maxSWB = max(SWB)) %>% 
+#   # ggpubr::ggboxplot(x="Decile_Group_PRS", y="SWB", fill="Decile_Group_PRS")
+#   ggpubr::ggscatter(x="Decile_Group_PRS", y="maxSWB", shape=18,
+#                     xlab="PRS decile groups", ylab="SWB",
+#                     add="reg.line", conf.int = TRUE,
+#                     add.params = list(color = "blue", fill = "gray50"), # Customize reg. line
+#                     cor.coef = TRUE,
+#                     cor.coeff.args = list(method = "pearson",
+#                                           # label.x = max(df_prs[,5] %>% scale)*0.75,
+#                                           label.y = 2.7,
+#                                           label.sep = "\n")
+#   )
+# dev.off()
+# 
+# 
+# pdf(file="Figure-Scatter-Decile_mean-PRS0.01_vs_SWB.pdf", width=7, height=5)
+# cbind.data.frame(PRS=df_prs[,5] %>% scale, SWB=df_pheno$SWB) %>%
+#   mutate(Decile_Group_PRS=dplyr::ntile(PRS, 10)) %>% 
+#   group_by(Decile_Group_PRS) %>%
+#   summarise(meanSWB = mean(SWB)) %>% 
+#   # ggpubr::ggboxplot(x="Decile_Group_PRS", y="SWB", fill="Decile_Group_PRS")
+#   ggpubr::ggscatter(x="Decile_Group_PRS", y="meanSWB", shape=18,
+#                     xlab="PRS decile groups", ylab="SWB",
+#                     add="reg.line", conf.int = TRUE,
+#                     add.params = list(color = "blue", fill = "gray50"), # Customize reg. line
+#                     cor.coef = TRUE,
+#                     cor.coeff.args = list(method = "pearson",
+#                                           # label.x = max(df_prs[,5] %>% scale)*0.75,
+#                                           # label.y = max(df_pheno$SWB)*0.95,
+#                                           label.sep = "\n")
+#   )
+# dev.off()
+
+cor(df_prs[,5], df_pheno$SWB)
+
+
+
+
+
+# ggplot2 is a handy package for plotting
+library(ggplot2)
+# generate a pretty format for p-value output
+prs.result$print.p <- round(prs.result$P, digits = 3)
+prs.result$print.p[!is.na(prs.result$print.p) & prs.result$print.p == 0] <-
+  format(prs.result$P[!is.na(prs.result$print.p) & prs.result$print.p == 0], digits = 2)
+prs.result$print.p <- sub("e", "*x*10^", prs.result$print.p)
+# Initialize ggplot, requiring the threshold as the x-axis
+# (use factor so that it is uniformly distributed)
 p = ggplot(data = prs.result, aes(x = factor(Threshold, levels = p.threshold), y = R2)) +
+  # Specify that we want to print p-value on top of the bars
+  # geom_text(
+  #   aes(label = paste(print.p)),
+  #   # vjust = -1.5,
+  #   hjust = -0.2,
+  #   angle = 90,
+  #   cex = 5,
+  #   parse = T
+  # )  +
+  # Specify the range of the plot, *1.25 to provide enough space for the p-values
   scale_y_continuous(limits = c(0, max(prs.result$R2) * 1.25)) +
+  # Specify the axis labels
   xlab(expression(italic(P) - value ~ threshold)) +
   ylab(expression(paste("PRS model fit:  ", R ^ 2))) +
+  # Draw a bar plot
   geom_bar(aes(fill = -log10(P)), stat = "identity") +
+  # Specify the colors
   scale_fill_gradient2(
-    low = "dodgerblue", high = "firebrick", mid = "dodgerblue",
+    low = "dodgerblue",
+    high = "firebrick",
+    mid = "dodgerblue",
     midpoint = 1e-4,
     name = bquote(atop(-log[10] ~ model ~ italic(P) - value))
   ) +
-  theme_classic() + 
-  theme(
+  # Some beautification of the plot
+  theme_classic() + theme(
+    legend.position="none",
     axis.title = element_text(face = "bold", size = 18),
     axis.text = element_text(size = 16),
+    legend.title = element_text(face = "bold", size = 18),
+    legend.text = element_text(size = 16),
     axis.text.x = element_text(angle = 45, hjust = 1)
   ) +
   labs(caption = "Adjusted for age, sex, and the top four PCs.")
-
+# save the plot
 ggsave("Figure-Pred_R2_barplot.pdf", p, height = 5, width = 10)
 
 ```
 
-## 6. Detailed Regression Analysis
+## 10. 상세 회귀분석 (Subgroup Analysis & Robust Regression)
 
-연령별 Subgroup 분석 및 Robust Regression 등을 통해 결과를 검증합니다.
+나이대별로 쪼개서 분석하거나, 이상치 제거하고 Robust Regression 돌리는 심화 분석 코드임.
 
 ```r
-library(broom)
-library(robustbase)
+# Regression --------------------------------------------------------------
+
+df_prs <- read.table("/Volumes/png2/LSH/merge0422-PRS/Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump_PRS.0.01.sscore") %>% {scale(.[,5]) %>% as.vector}
+
+df_pheno <- data.table::fread("./FinalData/merge0422.pheno_pc")
+
+
+fit <- lm(df_pheno$SWB ~ df_pheno$SEX + df_pheno$AGE+df_prs, 
+          subset=(df_pheno$AGE<30))
+fit %>% summary
+
+library(png.utils)
+cbind(PRS=df_prs, AGE=df_pheno$AGE, SWB=df_pheno$SWB) %>% 
+  pairs(upper.panel = NULL,
+        cex = 1.5, pch = 18, # adjustcolor(4, .4),
+        cex.labels = 2, font.labels = 2)
+
+
+
+fit %>% plot
 library(olsrr)
+fit %>% ols_plot_cooksd_bar()
 
-# 데이터 준비
-df_prs_vec <- read.table(paste0("./Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender_forPRS_snpFiltered_rsID_clump_PRS.", best_thresh, ".sscore")) %>% 
-  {scale(.[,5]) %>% as.vector}
+fit <- lm(df_pheno$SWB ~ df_pheno$SEX + df_pheno$AGE+df_prs, 
+          subset=!(1:nrow(df_pheno)) %in% c(5,11,34,43,47,65,106,107,130,146))
 
-# Subgroup Analysis Function
-run_subgroup_analysis <- function(data, prs_vec, age_limit=NULL) {
-  subset_condition <- if(is.null(age_limit)) rep(TRUE, nrow(data)) else data$AGE < age_limit
-  
-  df_tmp <- data %>% as.data.frame() %>% dplyr::select(SWB:PANAS_pa)
-  out_df <- NULL
-  
-  for(k in 1:ncol(df_tmp)){
-    res <- lm(scale(df_tmp[,k]) ~ data$SEX + data$AGE + scale(prs_vec), subset=subset_condition) %>% 
-      broom::tidy() %>% 
-      filter(term=="scale(prs_vec)")
-    out_df <- rbind.data.frame(out_df, cbind.data.frame(variable=colnames(df_tmp)[k], res))
-  }
-  return(out_df)
+fit %>% summary
+
+
+library(robustbase) 
+rfit <- lmrob(df_pheno$SWB ~ df_pheno$SEX + df_pheno$AGE+df_prs)
+rfit %>% summary
+
+
+library(broom)
+df_tmp <- df_pheno %>% as.data.frame() %>% dplyr::select(SWB:PANAS_pa)
+
+
+out <- NULL
+out_age20 <- NULL
+out_age20to35 <- NULL
+for( k in 1:ncol(df_tmp) ){
+  tmp <- cbind.data.frame( variable=colnames(df_tmp)[k], lm(scale(df_tmp[,k]) ~ df_pheno$SEX + df_pheno$AGE+scale(df_prs)) %>% broom::tidy() %>% filter(term=="scale(df_prs)") )
+  out <- rbind.data.frame(out, tmp)
+   
+  tmp <- cbind.data.frame( variable=colnames(df_tmp)[k], lm(scale(df_tmp[,k]) ~ df_pheno$SEX + df_pheno$AGE+scale(df_prs), subset=df_pheno$AGE<30) %>% broom::tidy() %>% filter(term=="scale(df_prs)") )
+  out_age20 <- rbind.data.frame(out_age20, tmp)
+   
+  tmp <- cbind.data.frame( variable=colnames(df_tmp)[k], lm(scale(df_tmp[,k]) ~ df_pheno$SEX + df_pheno$AGE+scale(df_prs), subset=df_pheno$AGE<35) %>% broom::tidy() %>% filter(term=="scale(df_prs)") )
+  out_age20to35 <- rbind.data.frame(out_age20to35, tmp)
 }
 
-# Run Analyses
-out_all <- run_subgroup_analysis(df_pheno, df_prs_vec)
-out_age20 <- run_subgroup_analysis(df_pheno, df_prs_vec, age_limit=30)
-out_age35 <- run_subgroup_analysis(df_pheno, df_prs_vec, age_limit=35)
 
-# 결과 확인
-print(out_age20)
+out
+# > out
+# variable          term    estimate  std.error  statistic    p.value
+# 1        SWB scale(df_prs)  0.14407643 0.07730388  1.8637670 0.06415313
+# 2  PWB_total scale(df_prs)  0.15189150 0.07727960  1.9654798 0.05105791
+# 3     PWB_AU scale(df_prs)  0.18033386 0.07718020  2.3365301 0.02068027
+# 4     PWB_EM scale(df_prs)  0.09260991 0.07778871  1.1905315 0.23556851
+# 5     PWB_PG scale(df_prs)  0.08543715 0.07775540  1.0987937 0.27347838
+# 6     PWB_PL scale(df_prs)  0.16866620 0.07720297  2.1847112 0.03033788
+# 7     PWB_SA scale(df_prs)  0.10430445 0.07753952  1.3451779 0.18043628
+# 8     PWB_PR scale(df_prs) -0.05487384 0.07822462 -0.7014907 0.48399719
+# 9       SWLS scale(df_prs)  0.14407643 0.07730388  1.8637670 0.06415313
+# 10  PANAS_pa scale(df_prs)  0.09571047 0.07625593  1.2551217 0.21123105
 
-# Robust Regression Example
-rfit <- lmrob(df_pheno$SWB ~ df_pheno$SEX + df_pheno$AGE + df_prs_vec)
-summary(rfit)
+out_age20
+# > out_age20
+# variable          term    estimate  std.error  statistic    p.value
+# 1        SWB scale(df_prs)  0.17761998 0.07819010  2.2716430 0.02444066
+# 2  PWB_total scale(df_prs)  0.18389854 0.07909526  2.3250259 0.02132676
+# 3     PWB_AU scale(df_prs)  0.19904436 0.07945169  2.5052252 0.01323787
+# 4     PWB_EM scale(df_prs)  0.12902525 0.07917040  1.6297157 0.10512876
+# 5     PWB_PG scale(df_prs)  0.11528803 0.07966300  1.4471968 0.14979823
+# 6     PWB_PL scale(df_prs)  0.14685988 0.07886509  1.8621659 0.06441358
+# 7     PWB_SA scale(df_prs)  0.13241067 0.07904748  1.6750775 0.09587236
+# 8     PWB_PR scale(df_prs) -0.02277162 0.07976167 -0.2854958 0.77563359
+# 9       SWLS scale(df_prs)  0.17761998 0.07819010  2.2716430 0.02444066
+# 10  PANAS_pa scale(df_prs)  0.12240064 0.07811809  1.5668669 0.11912143
+
+out_age20to35
+# > out_age20to35
+# variable          term    estimate  std.error  statistic    p.value
+# 1        SWB scale(df_prs)  0.15784336 0.07869954  2.0056452 0.04655878
+# 2  PWB_total scale(df_prs)  0.17589607 0.07823356  2.2483454 0.02590287
+# 3     PWB_AU scale(df_prs)  0.19123022 0.07865353  2.4312986 0.01613519
+# 4     PWB_EM scale(df_prs)  0.12576140 0.07816126  1.6089992 0.10956352
+# 5     PWB_PG scale(df_prs)  0.10509437 0.07893882  1.3313395 0.18494776
+# 6     PWB_PL scale(df_prs)  0.16222770 0.07876467  2.0596505 0.04103204
+# 7     PWB_SA scale(df_prs)  0.12034853 0.07886374  1.5260312 0.12895206
+# 8     PWB_PR scale(df_prs) -0.03549617 0.07943275 -0.4468708 0.65556521
+# 9       SWLS scale(df_prs)  0.15784336 0.07869954  2.0056452 0.04655878
+# 10  PANAS_pa scale(df_prs)  0.11024346 0.07760178  1.4206306 0.15734602
 
 ```
-
----
-
-### 💡 교수님, 추가로 확인하실 사항입니다.
-
-1. **`png.utils` 패키지 의존성:** 코드 초반부에 `library(png.utils)`가 있는데, 이는 교수님께서 직접 만드신 패키지나 로컬 함수 모음으로 보입니다. GitHub에 올리실 때는 해당 패키지가 같이 업로드되어 있거나, 제가 작성해 드린 코드의 **Step 1**처럼 `striHelper`, `png.str.sort` 함수를 스크립트 내에 직접 정의해 주는 것이 실습생들에게 오류를 줄이는 방법일 것 같습니다. (위 마크다운에는 직접 정의하는 방식으로 넣어두었습니다.)
-2. **경로(Path) 수정:** `/Volumes/png2/...` 와 같은 절대 경로는 워크숍 참가자들의 환경과 다를 수 있습니다. 실습용 데이터를 GitHub 레포지토리 내 `data/` 폴더 등에 넣고 상대 경로(`.` 또는 `./data`)를 사용하도록 안내하시면 더 좋을 것 같습니다.
-3. **PLINK 실행 권한:** Mac/Linux 환경에 따라 `~/plink2` 경로가 다를 수 있으니, 워크숍 전에 환경 변수 설정($PATH)에 대해 간단히 언급해주시면 진행이 매끄러울 것입니다.
-
-성공적인 워크숍 되시길 응원합니다!
