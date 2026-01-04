@@ -1,17 +1,12 @@
-# Microbiome Data Analysis Workshop: CoDA Pipeline
+# Microbiome/PRS Analysis Workshop:
 
-**Date:** 2026-01-05  
-**Author:** Prof. Kipoong Kim (Dept. of Statistics, Changwon National University)  
-**Topic:** Compositional Data Analysis (CoDA) & Differential Abundance Analysis
+## CoDA Pipeline
 
+---  
+본 워크숍에서는 마이크로바이옴 데이터의 특성(Sparsity, Compositionality)을 고려한 전처리, 다양성 분석, CoDA 회귀분석(Ternary Plot) 및 Differential Abundance Analysis를 실습함.
 ---
   
-  ## Introduction
-  본 워크숍에서는 마이크로바이옴 데이터의 특성(Sparsity, Compositionality)을 고려한 전처리, 다양성 분석, CoDA 회귀분석(Ternary Plot) 및 Differential Abundance Analysis를 실습함.
-
----
-  
-  ## [Section 0] 라이브러리 로드 및 환경 설정
+## [Section 0] 라이브러리 로드 및 환경 설정
   
   ```r
 rm(list=ls())
