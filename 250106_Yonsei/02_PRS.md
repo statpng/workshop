@@ -358,7 +358,7 @@ FILENAME="Total.dose_R20.8_MAF0.005_geno0.05_hwe0.000001_Gender"
 
 ## Part 2. PRS Analysis
 
-Part 1에서 만들어진 Clean Data와 Summary Statistics를 이용해서 PRS 점수 계산하고 검증하는 단계임. (이전 요청하셨던 코드 부분)
+Part 1에서 만들어진 Clean Data와 Summary Statistics를 이용해서 PRS 점수 계산하고 검증하는 단계임.
 
 ### 2.1 Setup & Helper Functions
 
