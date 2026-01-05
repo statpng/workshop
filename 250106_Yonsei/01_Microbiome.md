@@ -10,15 +10,6 @@
   ```r
 rm(list=ls())
 
-# ==============================================================================
-# Title: Compositional Data Analysis (CoDA) Pipeline for Microbiome
-# Author: Prof.  (Statistics & CoDA Specialist)
-# Date: 2026-01-04
-# Description: 
-#   Microbiome 데이터의 특성(Sparsity, Compositionality)을 고려한 
-#   전처리, 다양성 분석, CoDA 회귀분석(Ternary Plot) 및 Differential Abundance Analysis
-# ==============================================================================
-
 # ------------------------------------------------------------------------------
 # [Section 0] 라이브러리 로드 및 환경 설정
 # ------------------------------------------------------------------------------
