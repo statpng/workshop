@@ -11,6 +11,7 @@ For Polygenic Risk Score (PRS)
 - https://github.com/statpng/GWAS/blob/main/plink_tutorial.md
 - https://www.bioinf.wits.ac.za/courses/sahgp/plink-tut-jul14.pdf
 - https://genomicsbootcamp.github.io/book/genotype-data-quality-control.html#how-qc-works-in-plink
+
 PRS catalog
 - https://www.pgscatalog.org/downloads/#dl_ftp_list
 - https://ftp.ebi.ac.uk/pub/databases/spot/pgs/scores/
